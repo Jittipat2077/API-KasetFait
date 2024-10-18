@@ -7,30 +7,26 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 
 $app->post('/update-bootdetail', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
-    // Directory for image uploads
-    $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/boot/';
-
-    // Function to handle file uploads
+    // $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/boot/';
+    $imgPath = '../assets/img/boot/';
     function handleUpload($fileKey, $imgPath) {
         if (isset($_FILES[$fileKey]) && $_FILES[$fileKey]['error'] === UPLOAD_ERR_OK) {
-            $imgName = uniqid() . '.png'; // Assume PNG file for simplicity
+            $imgName = uniqid() . '.png';
             $targetFilePath = $imgPath . $imgName;
             if (move_uploaded_file($_FILES[$fileKey]['tmp_name'], $targetFilePath)) {
                 return $imgName;
             } else {
-                return null; // If file move fails
+                return null;
             }
         } else {
-            return null; // If no image uploaded
+            return null;
         }
     }
-    // Handle img_boot file upload
-    $imgBoot = handleUpload('img_boot', $imgPath);
 
-    // Set status_boot to an empty string if it's not provided
+    $imgBoot = handleUpload('img_boot', $imgPath);
     $statusBoot = isset($_POST['status_boot']) ? $_POST['status_boot'] : 'ว่าง';
 
-    // Prepare and execute SQL statement
+    // Prepare SQL statement
     $sql = "UPDATE boot SET 
                 number_boot = ?, 
                 status_boot = ?, 
@@ -39,34 +35,28 @@ $app->post('/update-bootdetail', function (Request $request, Response $response,
                 boot_size = ? 
             WHERE id_boot = ?";
     $stmt = $conn->prepare($sql);
-
-    // Ensure all required POST fields are set and bind parameters
-    $stmt->bind_param(
-        'sssssi', 
-        $_POST['number_boot'], 
-        $statusBoot, 
-        $imgBoot, 
-        $_POST['price'], 
-        $_POST['boot_size'], 
-        $_POST['id_boot']
-    );
+    $stmt->bind_param('sssssi', $_POST['number_boot'], $statusBoot, $imgBoot, $_POST['price'], $_POST['boot_size'], $_POST['id_boot']);
     $stmt->execute();
+
     $affected = $stmt->affected_rows;
+
     if ($affected > 0) {
         $data = ["affected_rows" => $affected];
         $response->getBody()->write(json_encode($data));
         return $response
             ->withHeader('Content-Type', 'application/json')
-            ->withStatus(200); // Return 200 OK status
+            ->withStatus(200); // Return 200 OK
     } else {
         // If data update fails
-        $errorResponse = ["message" => "Failed to update boot entry"];
+        $errorResponse = ["message" => "Failed to update boot"];
         $response->getBody()->write(json_encode($errorResponse));
         return $response
             ->withHeader('Content-Type', 'application/json')
-            ->withStatus(500); // Return 500 Internal Server Error status
+            ->withStatus(500); // Return 500 Internal Server Error
     }
 });
+
+
 
 $app->delete('/delete-boot/{id_boot}', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
@@ -133,8 +123,8 @@ $app->post('/add-boot', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
 
     // Directory for image uploads
-    $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/boot/';
-
+    // $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/boot/';
+    $imgPath = '../assets/img/boot/';
     // Function to handle file uploads
     function handleUpload($fileKey, $imgPath) {
         if (isset($_FILES[$fileKey])) {

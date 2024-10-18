@@ -2,6 +2,33 @@
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
+$app->delete('/delete-all-date_events', function (Request $request, Response $response) {
+    $conn = $GLOBALS['conn'];
+
+    // Prepare the SQL DELETE statement to delete all records
+    $sql = 'DELETE FROM date_event';
+    $stmt = $conn->prepare($sql);
+
+    // Execute the statement
+    if ($stmt->execute()) {
+        $affectedRows = $stmt->affected_rows; // Get the number of deleted rows
+        $response->getBody()->write(json_encode([
+            'message' => 'All records deleted successfully',
+            'deleted_count' => $affectedRows
+        ], JSON_UNESCAPED_UNICODE));
+        return $response
+            ->withHeader('Content-Type', 'application/json; charset=utf-8')
+            ->withStatus(200);
+    } else {
+        $response->getBody()->write(json_encode(['message' => 'Failed to delete records'], JSON_UNESCAPED_UNICODE));
+        return $response
+            ->withHeader('Content-Type', 'application/json; charset=utf-8')
+            ->withStatus(500);
+    }
+});
+
+
+
 $app->get('/list-date_event', function (Request $request, Response $response) {
     $conn = $GLOBALS['conn'];
     
@@ -89,13 +116,12 @@ $app->post('/update-zone-event-zone', function (Request $request, Response $resp
 
 
 
-
 $app->post('/add-event', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
 
     // Directory for image uploads
-    $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/event/';
-
+    // $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/event/';
+    $imgPath = '../assets/img/event/';
     // Function to handle file uploads
     function handleUpload($fileKey, $imgPath) {
         if (isset($_FILES[$fileKey])) {
@@ -116,6 +142,26 @@ $app->post('/add-event', function (Request $request, Response $response, $args) 
 
     // Set status_open_close to an empty string if it's not provided
     $statusOpenClose = isset($_POST['status_open_close']) ? $_POST['status_open_close'] : '';
+
+    // Check if there are already rows in the date_event table
+    $checkSql = "SELECT COUNT(*) as count FROM date_event";
+    $checkResult = $conn->query($checkSql);
+    if ($checkResult === false) {
+        $errorResponse = ["message" => "SQL check error: " . $conn->error];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(500); // Send 500 Internal Server Error status
+    }
+    $row = $checkResult->fetch_assoc();
+    if ($row['count'] > 0) {
+        // If there are already rows, return an error response
+        $errorResponse = ["message" => "Cannot add event: event already exists"];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(400); // Send 400 Bad Request status
+    }
 
     // Prepare and execute SQL statement
     $sql = "INSERT INTO date_event (
@@ -197,16 +243,15 @@ $app->post('/add-event', function (Request $request, Response $response, $args) 
     }
 });
 
-
 $app->post('/update-event', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
 
     // Directory for image uploads
-    $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/event/';
-
+    // $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/event/';
+    $imgPath = '../assets/img/event/';
     // Function to handle file uploads
     function handleUpload($fileKey, $imgPath) {
-        if (isset($_FILES[$fileKey])) {
+        if (isset($_FILES[$fileKey]) && $_FILES[$fileKey]['error'] === UPLOAD_ERR_OK) {
             $imgName = uniqid() . '.png'; // Assume PNG file for simplicity
             $targetFilePath = $imgPath . $imgName;
             if (move_uploaded_file($_FILES[$fileKey]['tmp_name'], $targetFilePath)) {
@@ -218,91 +263,132 @@ $app->post('/update-event', function (Request $request, Response $response, $arg
             return null; // If no image uploaded
         }
     }
+    
     // Handle img_mapzone file upload
     $imgMapzone = handleUpload('img_mapzone', $imgPath);
 
     // Set status_open_close to an empty string if it's not provided
     $statusOpenClose = isset($_POST['status_open_close']) ? $_POST['status_open_close'] : '';
 
-    // Prepare and execute SQL statement
-    $sql = "UPDATE date_event SET
-    name_festival = ?,
-    date_start_reservation = ?,
-    date_end_reservation = ?, 
-    date_start_festival = ?, 
-    date_end_festival = ?,
-    date_start_payment = ?,
-    date_end_payment = ?,
-    status_open_close = ?,
-    img_mapzone = ?
-";
+    try {
+        // Check if there are already rows in the date_event table
+        $checkSql = "SELECT COUNT(*) as count FROM date_event";
+        $checkResult = $conn->query($checkSql);
+        if ($checkResult === false) {
+            throw new Exception("SQL check error: " . $conn->error);
+        }
+        $row = $checkResult->fetch_assoc();
 
-$stmt = $conn->prepare($sql);
-if ($stmt === false) {
-    $errorResponse = ["message" => "SQL preparation error: " . $conn->error];
-    $response->getBody()->write(json_encode($errorResponse));
-    return $response
-        ->withHeader('Content-Type', 'application/json')
-        ->withStatus(500); // Send 500 Internal Server Error status
-}
+        if ($row['count'] > 0) {
+            // If there are already rows, update the existing entry
+            $sql = "UPDATE date_event SET 
+                name_festival = ?, 
+                date_start_reservation = ?, 
+                date_end_reservation = ?, 
+                date_start_festival = ?, 
+                date_end_festival = ?, 
+                date_start_payment = ?, 
+                date_end_payment = ?, 
+                status_open_close = ?, 
+                img_mapzone = IFNULL(?, img_mapzone)";
 
-// Bind parameters
-$stmt->bind_param(
-    'sssssssss', 
-    $_POST['name_festival'], 
-    $_POST['date_start_reservation'], 
-    $_POST['date_end_reservation'], 
-    $_POST['date_start_festival'], 
-    $_POST['date_end_festival'], 
-    $_POST['date_start_payment'], 
-    $_POST['date_end_payment'],
-    $statusOpenClose,
-    $imgMapzone
-);
+            $stmt = $conn->prepare($sql);
+            if ($stmt === false) {
+                throw new Exception("SQL preparation error: " . $conn->error);
+            }
 
-    $stmt->execute();
+            // Bind parameters
+            $stmt->bind_param(
+                'sssssssss', 
+                $_POST['name_festival'], 
+                $_POST['date_start_reservation'], 
+                $_POST['date_end_reservation'], 
+                $_POST['date_start_festival'], 
+                $_POST['date_end_festival'], 
+                $_POST['date_start_payment'], 
+                $_POST['date_end_payment'],
+                $statusOpenClose,
+                $imgMapzone
+            );
 
-    if ($stmt->error) {
-        $errorResponse = ["message" => "SQL execution error: " . $stmt->error];
-        $response->getBody()->write(json_encode($errorResponse));
-        return $response
-            ->withHeader('Content-Type', 'application/json')
-            ->withStatus(500); // Send 500 Internal Server Error status
-    }
+            $stmt->execute();
 
-    $affected = $stmt->affected_rows;
+            if ($stmt->error) {
+                throw new Exception("SQL execution error: " . $stmt->error);
+            }
 
-    if ($affected > 0) {
-        $lastIdx = $conn->insert_id;
-        
-        // Update zone table with the last inserted id
-        $updateSql = "UPDATE zone SET id_date=?";
-        $updateStmt = $conn->prepare($updateSql);
-        $updateStmt->bind_param('i', $lastIdx);
-        $updateStmt->execute();
-
-        if ($updateStmt->error) {
-            $errorResponse = ["message" => "Failed to update zone: " . $updateStmt->error];
-            $response->getBody()->write(json_encode($errorResponse));
+            $data = ["message" => "Event updated successfully"];
+            $response->getBody()->write(json_encode($data));
             return $response
                 ->withHeader('Content-Type', 'application/json')
-                ->withStatus(500); // Send 500 Internal Server Error status
-        }
+                ->withStatus(200); // Send 200 OK status
+        } else {
+            // If no rows are found, insert a new entry
+            $sql = "INSERT INTO date_event (
+                name_festival, 
+                date_start_reservation, 
+                date_end_reservation, 
+                date_start_festival, 
+                date_end_festival, 
+                date_start_payment, 
+                date_end_payment, 
+                status_open_close, 
+                img_mapzone
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
-        $data = ["message" => "Event created and zone updated successfully", "last_idx" => $lastIdx];
-        $response->getBody()->write(json_encode($data));
-        return $response
-            ->withHeader('Content-Type', 'application/json')
-            ->withStatus(200); // Send 200 OK status
-    } else {
-        // If data insertion fails
-        $errorResponse = ["message" => "Failed to create event entry"];
+            $stmt = $conn->prepare($sql);
+            if ($stmt === false) {
+                throw new Exception("SQL preparation error: " . $conn->error);
+            }
+
+            // Bind parameters
+            $stmt->bind_param(
+                'sssssssss', 
+                $_POST['name_festival'], 
+                $_POST['date_start_reservation'], 
+                $_POST['date_end_reservation'], 
+                $_POST['date_start_festival'], 
+                $_POST['date_end_festival'], 
+                $_POST['date_start_payment'], 
+                $_POST['date_end_payment'],
+                $statusOpenClose,
+                $imgMapzone
+            );
+
+            $stmt->execute();
+
+            if ($stmt->error) {
+                throw new Exception("SQL execution error: " . $stmt->error);
+            }
+
+            $lastIdx = $conn->insert_id;
+
+            // Update all rows in the zone table with the last inserted id
+            $updateSql = "UPDATE zone SET id_date=?";
+            $updateStmt = $conn->prepare($updateSql);
+            $updateStmt->bind_param('i', $lastIdx);
+            $updateStmt->execute();
+
+            if ($updateStmt->error) {
+                throw new Exception("Failed to update zone: " . $updateStmt->error);
+            }
+
+            $data = ["message" => "Event created and zone updated successfully", "last_idx" => $lastIdx];
+            $response->getBody()->write(json_encode($data));
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withStatus(200); // Send 200 OK status
+        }
+    } catch (Exception $e) {
+        $errorResponse = ["message" => "Failed to update event entry", "error" => $e->getMessage()];
         $response->getBody()->write(json_encode($errorResponse));
         return $response
             ->withHeader('Content-Type', 'application/json')
             ->withStatus(500); // Send 500 Internal Server Error status
     }
 });
+
+
 
 ?>
 

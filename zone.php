@@ -6,7 +6,8 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 $app->post('/update-zone', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
     // กำหนดไดเรกทอรีสำหรับการอัปโหลดรูปภาพ
-    $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/zone/';
+    // $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/zone/';
+    $imgPath = '../assets/img/zone/';
     // ฟังก์ชันสำหรับการจัดการการอัปโหลดไฟล์
     function handleUpload($fileKey, $imgPath) {
         if (isset($_FILES[$fileKey]) && $_FILES[$fileKey]['error'] === UPLOAD_ERR_OK) {
@@ -55,8 +56,8 @@ $app->post('/add-zone', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
 
     // กำหนดไดเรกทอรีสำหรับการอัปโหลดรูปภาพ
-    $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/zone/';
-
+    // $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/zone/';
+    $imgPath = '../assets/img/zone/';
     // ฟังก์ชันสำหรับการจัดการการอัปโหลดไฟล์
     function handleUpload($fileKey, $imgPath) {
         if (isset($_FILES[$fileKey]) && $_FILES[$fileKey]['error'] === UPLOAD_ERR_OK) {
@@ -211,7 +212,11 @@ $app->get('/boot-test/{id_boot}', function (Request $request, Response $response
 
 $app->get('/zone', function (Request $request, Response $response) {
     $conn = $GLOBALS['conn'];
-    $sql = 'SELECT z.*, COUNT(b.id_boot) AS boot_count
+    $sql = 'SELECT z.*, 
+                   COUNT(b.id_boot) AS boot_count,
+                   SUM(CASE WHEN b.status_boot = "ว่าง" THEN 1 ELSE 0 END) AS empty_boot_count,
+                    SUM(CASE WHEN b.status_boot = "จองสําเร็จ" THEN 1 ELSE 0 END) AS booked_boot_count,
+                    SUM(CASE WHEN b.status_boot = "อยู่ระหว่างตรวจสอบ" THEN 1 ELSE 0 END) AS wait_boot_count
             FROM zone z
             LEFT JOIN boot b ON z.id_zone = b.id_zone
             GROUP BY z.id_zone';

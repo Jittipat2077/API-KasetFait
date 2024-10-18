@@ -1,7 +1,181 @@
 <?php
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
 
+
+
+
+// $app->post('/reset-password', function (Request $request, Response $response, $args) {
+//     $data = $request->getParsedBody();
+//     $token = $data['token'] ?? null;
+//     $newPassword = $data['new_password'] ?? null;
+
+//     if (empty($token) || empty($newPassword)) {
+//         $response->getBody()->write(json_encode(['status' => 'error', 'message' => 'Token and new password are required.']));
+//         return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+//     }
+
+//     $conn = $GLOBALS['connect'];
+
+//     // Verify token
+//     $stmt = $conn->prepare("SELECT email FROM password_resets WHERE token = ? AND created_at > NOW() - INTERVAL 1 HOUR");
+//     $stmt->bind_param("s", $token);
+//     $stmt->execute();
+//     $result = $stmt->get_result();
+
+//     if ($result->num_rows === 0) {
+//         $response->getBody()->write(json_encode(['status' => 'error', 'message' => 'Invalid or expired token.']));
+//         return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+//     }
+
+//     $email = $result->fetch_assoc()['email'];
+
+//     // Update password
+//     $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
+
+//     $stmt = $conn->prepare("UPDATE account SET password = ? WHERE email = ?");
+//     $stmt->bind_param("ss", $hashedPassword, $email);
+//     $stmt->execute();
+
+//     // Delete the used token
+//     $stmt = $conn->prepare("DELETE FROM password_resets WHERE token = ?");
+//     $stmt->bind_param("s", $token);
+//     $stmt->execute();
+
+//     $response->getBody()->write(json_encode(['status' => 'success', 'message' => 'Password has been reset successfully.']));
+//     return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+// });
+// $app->post('/edit-password', function (Request $request, Response $response, $args) {
+//     $json = $request->getBody();
+//     $jsonData = json_decode($json, true);
+//     $conn = $GLOBALS['conn'];
+
+//     // Check if the ID and password are provided
+//     if (!isset($jsonData['id']) || !isset($jsonData['password'])) {
+//         $errorResponse = ["message" => "User ID and password are required"];
+//         $response->getBody()->write(json_encode($errorResponse));
+//         return $response
+//             ->withHeader('Content-Type', 'application/json')
+//             ->withStatus(400); // Return a 400 Bad Request status
+//     }
+
+//     $userId = $jsonData['id'];
+
+//     // Proceed with updating the user's password
+//     $sql = "UPDATE account SET password = ? WHERE id = ?";
+
+//     // Hash the new password
+//     $hashedPassword = password_hash($jsonData['password'], PASSWORD_DEFAULT);
+
+//     $stmt = $conn->prepare($sql);
+//     $stmt->bind_param('si', $hashedPassword, $userId);
+//     $stmt->execute();
+
+//     $affected = $stmt->affected_rows;
+
+//     if ($affected > 0) {
+//         $data = ["affected_rows" => $affected, "user_id" => $userId];
+//         $response->getBody()->write(json_encode($data));
+//         return $response
+//             ->withHeader('Content-Type', 'application/json')
+//             ->withStatus(200); // Return a 200 OK status
+//     } else {
+//         // If the update failed for any reason
+//         $errorResponse = ["message" => "Failed to update user password"];
+//         $response->getBody()->write(json_encode($errorResponse));
+//         return $response
+//             ->withHeader('Content-Type', 'application/json')
+//             ->withStatus(500); // Return a 500 Internal Server Error status
+//     }
+// });
+$app->get('/add-user/{id}', function (Request $request, Response $response, $args) {
+    $conn = $GLOBALS['conn'];
+    $id_account = $args['id'] ?? null;
+    if ($id_account === null) {
+        $errorResponse = ["message" => "id_account is required"];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(400); 
+    }
+    $sql = 'SELECT * FROM account WHERE id = ?'; 
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param('s', $id_account);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $data = array();
+    while ($row = $result->fetch_assoc()) {
+        array_push($data, $row);
+    }
+    if (empty($data)) {
+        $errorResponse = ["message" => "No account found with the provided id_account"];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(404); // Return a 404 Not Found status
+    }
+    $updateAccountSql = 'UPDATE account SET role = ? WHERE id = ?';
+    $updateAccountStmt = $conn->prepare($updateAccountSql);
+    $newRole = 'user'; 
+    $updateAccountStmt->bind_param('ss', $newRole, $id_account);
+    $updateAccountStmt->execute();
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $updatedData = array();
+    while ($row = $result->fetch_assoc()) {
+        array_push($updatedData, $row);
+    }
+    $response->getBody()->write(json_encode($updatedData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+    return $response
+        ->withHeader('Content-Type', 'application/json; charset=utf-8')
+        ->withStatus(200);
+});
+
+$app->get('/add-admin/{id}', function (Request $request, Response $response, $args) {
+    $conn = $GLOBALS['conn'];
+    $id_account = $args['id'] ?? null;
+
+    if ($id_account === null) {
+        $errorResponse = ["message" => "id_account is required"];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(400); 
+    }
+    $sql = 'SELECT * FROM account WHERE id = ?'; // Filter by id_account
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param('s', $id_account);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $data = array();
+    while ($row = $result->fetch_assoc()) {
+        array_push($data, $row);
+    }
+    if (empty($data)) {
+        $errorResponse = ["message" => "No account found with the provided id_account"];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(404); 
+    }
+    $updateAccountSql = 'UPDATE account SET role = ? WHERE id = ?';
+    $updateAccountStmt = $conn->prepare($updateAccountSql);
+    $newRole = 'admin'; // new role for account
+    $updateAccountStmt->bind_param('ss', $newRole, $id_account);
+    $updateAccountStmt->execute();
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $updatedData = array();
+    while ($row = $result->fetch_assoc()) {
+        array_push($updatedData, $row);
+    }
+    $response->getBody()->write(json_encode($updatedData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+    return $response
+        ->withHeader('Content-Type', 'application/json; charset=utf-8')
+        ->withStatus(200);
+});
 
 
 $app->post('/update-boot', function (Request $request, Response $response, $args) {
@@ -38,42 +212,6 @@ $app->post('/update-boot', function (Request $request, Response $response, $args
         ->withHeader('Content-Type', 'application/json')
         ->withStatus(200); // Return a 200 OK status
 });
-
-
-
-// $app->post('/up-date/{id}', function (Request $request, Response $response, $args) {
-//     $userId = $args['id']; // Extract the user ID from the URL path
-//     $json = $request->getBody();
-//     $jsonData = json_decode($json, true);
-//     $conn = $GLOBALS['conn'];
-
-//     // Proceed with updating the user
-//     $sql = "UPDATE account SET firstname=?, lastname=?, password=?, tel=?, role=? WHERE id=?";
-//     $hashedPassword = password_hash($jsonData['password'], PASSWORD_DEFAULT);
-//     $role = isset($jsonData['role']) ? $jsonData['role'] : 'user';
-
-//     $stmt = $conn->prepare($sql);
-//     $stmt->bind_param('sssssi', $jsonData['firstname'], $jsonData['lastname'], $hashedPassword, $jsonData['tel'], $role, $userId);
-//     $stmt->execute();
-
-//     $affected = $stmt->affected_rows;
-
-//     if ($affected > 0) {
-//         $data = ["message" => "User updated successfully"];
-//         $response->getBody()->write(json_encode($data));
-//         return $response
-//             ->withHeader('Content-Type', 'application/json')
-//             ->withStatus(200); // Return a 200 OK status
-//     } else {
-//         // If the update failed for any reason
-//         $errorResponse = ["message" => "Failed to update user"];
-//         $response->getBody()->write(json_encode($errorResponse));
-//         return $response
-//             ->withHeader('Content-Type', 'application/json')
-//             ->withStatus(500); // Return a 500 Internal Server Error status
-//     }
-// });
-
 $app->post('/edit-password', function (Request $request, Response $response, $args) {
     $json = $request->getBody();
     $jsonData = json_decode($json, true);
@@ -117,8 +255,6 @@ $app->post('/edit-password', function (Request $request, Response $response, $ar
             ->withStatus(500); // Return a 500 Internal Server Error status
     }
 });
-
-
 
 $app->get('/list-all-user', function (Request $request, Response $response) {
     $conn = $GLOBALS['conn'];

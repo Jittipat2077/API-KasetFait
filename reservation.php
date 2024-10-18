@@ -41,11 +41,12 @@ $app->post('/update-reservation', function (Request $request, Response $response
 
     // Check if img_slip is sent
     if (isset($_FILES['img_slip'])) {
-        $imgSlipPath = 'C:/Users/aleny/Desktop/Final/my-project/my-project/src/assets/img/slip/';
+        // $imgPath = 'C:/Users/aleny/Desktop/Final/New/my-project/my-project/src/assets/img/slip/';
+        $imgPath = '../assets/img/slip/';
         $imgSlipName = uniqid() . '.png'; 
 
         // Move uploaded file to target directory
-        $targetFilePath = $imgSlipPath . $imgSlipName;
+        $targetFilePath = $imgPath . $imgSlipName;
         move_uploaded_file($_FILES['img_slip']['tmp_name'], $targetFilePath);
     }
 
@@ -78,6 +79,55 @@ $app->post('/update-reservation', function (Request $request, Response $response
         return $response
             ->withHeader('Content-Type', 'application/json')
             ->withStatus(500); 
+    }
+});
+
+$app->delete('/delete-reservations', function (Request $request, Response $response, $args) {
+    $conn = $GLOBALS['conn'];
+
+    // เริ่มธุรกรรม
+    $conn->begin_transaction();
+
+    try {
+        $sqlUpdate = "UPDATE boot SET id_reservation = NULL, status_boot = 'ว่าง' WHERE status_boot = 'อยู่ระหว่างตรวจสอบ'";
+        $stmtUpdate = $conn->prepare($sqlUpdate);
+        $stmtUpdate->execute();
+
+        $affectedUpdate = $stmtUpdate->affected_rows;
+
+        if ($affectedUpdate < 0) {
+            throw new Exception("Failed to update any boots.");
+        }
+
+        // ลบการจองที่มีสถานะเป็น 'อยู่ในระหว่างการตรวจสอบ'
+        $sqlDelete = "DELETE FROM reservation WHERE status = 'ยังไม่ชำระเงิน'";
+        $stmtDelete = $conn->prepare($sqlDelete);
+        $stmtDelete->execute();
+
+        $affectedDelete = $stmtDelete->affected_rows;
+
+        if ($affectedDelete <= 0) {
+            throw new Exception("Failed to delete any reservations.");
+        }
+
+        // ยืนยันธุรกรรม
+        $conn->commit();
+
+        $data = ["message" => "Boots updated and reservations with status 'อยู่ในระหว่างการตรวจสอบ' deleted successfully"];
+        $response->getBody()->write(json_encode($data));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(200);
+
+    } catch (Exception $e) {
+        // ยกเลิกธุรกรรมในกรณีเกิดข้อผิดพลาด
+        $conn->rollback();
+
+        $errorResponse = ["message" => $e->getMessage()];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(500);
     }
 });
 
@@ -126,37 +176,57 @@ $app->delete('/delete-reservation/{id_reservation}', function (Request $request,
 });
 
 
-
 $app->post('/add-reservation', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
 
-    // ตรวจสอบว่ามีการส่ง img_slip หรือไม่
-    if (isset($_FILES['img_slip'])) {
-        $imgSlipPath = 'C:/Users/aleny/Desktop/Final/my-project/my-project/src/assets/img/slip/';
-        $imgSlipName = uniqid() . '.png'; // สมมติว่าเป็นไฟล์ PNG เพื่อความง่าย คุณสามารถปรับเปลี่ยนตามที่ต้องการ
+    // Retrieve the POST parameters
+    $data = $request->getParsedBody();
+    $paymentStatus = $data['payment_status'] ?? null; // Get payment status from request, if exists
 
-        // ย้ายไฟล์ที่อัปโหลดไปยังไดเรกทอรีเป้าหมาย
-        $targetFilePath = $imgSlipPath . $imgSlipName;
+    // Check if img_slip was sent
+    if (isset($_FILES['img_slip'])) {
+        $imgPath = '../assets/img/slip/';
+        $imgSlipName = uniqid() . '.png'; // Assume it's a PNG file for simplicity
+
+        // Move the uploaded file to the target directory
+        $targetFilePath = $imgPath . $imgSlipName;
         move_uploaded_file($_FILES['img_slip']['tmp_name'], $targetFilePath);
 
-        $status = "อยู่ในระหว่างการตรวจสอบ"; // กำหนดสถานะเป็น "อยู่ในระหว่างการตรวจสอบ"
-        $datePayment = 'current_timestamp()'; // กำหนดวันที่ชำระเงินเป็นเวลาปัจจุบัน
+        $status = "อยู่ในระหว่างการตรวจสอบ"; // Set status to "under review"
+        $datePayment = date('Y-m-d H:i:s'); // Set payment date to current time
     } else {
-        $imgSlipName = null; // ไม่มีการอัปโหลดรูปภาพ
-        $status = "ยังไม่ชำระเงิน"; // กำหนดสถานะเป็น "ยังไม่ชำระเงิน"
-        $datePayment = null; // วันที่ชำระเงินเป็น null
+        $imgSlipName = null; // No image uploaded
+        
+        // Check if the payment status is cash payment
+        if ($paymentStatus === 'cash_payment') {
+            $status = "อยู่ในระหว่างการตรวจสอบชําระเงินสด"; // Set status to "cash payment"
+            $datePayment = null; // Set payment date to null
+        } else {
+            $status = "ยังไม่ชำระเงิน"; // Set status to "not paid"
+            $datePayment = null; // Payment date is null
+        }
     }
 
-    // เตรียมและดำเนินการ SQL statement
-    $sql = "INSERT INTO reservation (id, date_reserva, date_payment, sell, img_slip, status) VALUES (?, current_timestamp(), ?, ?, ?, ?)";
+    // Prepare the values for each sell column with the prefixes
+    $sell = "ลําดับที่ 1 " . ($data['sell'] ?? ""); // Value for sell with prefix
+    $sell_two = "ลําดับที่ 2 " . ($data['sell_two'] ?? ""); // Value for sell_two with prefix
+    $sell_three = "ลําดับที่ 3 " . ($data['sell_three'] ?? ""); // Value for sell_three with prefix
+    $sell_four = "ลําดับที่ 4 " . ($data['sell_four'] ?? ""); // Value for sell_four with prefix
+
+    // Prepare and execute the SQL statement
+    $sql = "INSERT INTO reservation (id, date_payment, sell, sell_two, sell_three, sell_four, img_slip, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
     $stmt = $conn->prepare($sql);
 
-    if ($datePayment) {
-        $stmt->bind_param('sssss', $_POST['id'], $datePayment, $_POST['sell'], $imgSlipName, $status);
-    } else {
-        $stmt->bind_param('sssss', $_POST['id'], $datePayment, $_POST['sell'], $imgSlipName, $status);
+    if ($stmt === false) {
+        $errorResponse = ["message" => "Failed to prepare SQL statement", "error" => $conn->error];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(500); // Send back 500 Internal Server Error
     }
 
+    // Binding parameters
+    $stmt->bind_param('ssssssss', $data['id'], $datePayment, $sell, $sell_two, $sell_three, $sell_four, $imgSlipName, $status);
     $stmt->execute();
 
     $affected = $stmt->affected_rows;
@@ -166,16 +236,18 @@ $app->post('/add-reservation', function (Request $request, Response $response, $
         $response->getBody()->write(json_encode($data));
         return $response
             ->withHeader('Content-Type', 'application/json')
-            ->withStatus(200); // ส่งกลับสถานะ 200 OK
+            ->withStatus(200); // Send back 200 OK
     } else {
-        // หากการแทรกข้อมูลล้มเหลว
+        // If insertion failed
         $errorResponse = ["message" => "Failed to create reservation"];
         $response->getBody()->write(json_encode($errorResponse));
         return $response
             ->withHeader('Content-Type', 'application/json')
-            ->withStatus(500); // ส่งกลับสถานะ 500 Internal Server Error
+            ->withStatus(500); // Send back 500 Internal Server Error
     }
 });
+
+
 
 // $app->post('/add-reservation', function (Request $request, Response $response, $args) {
 //     $conn = $GLOBALS['conn'];
@@ -375,8 +447,6 @@ $app->get('/boot-reservation-new/{id_boot}', function (Request $request, Respons
         $totalPrice += $row['price']; // Add each boot's price to total price
         array_push($data, $row);
     }
-
-    // Add total price to the response data
     $responseData = array(
         'totalPrice' => $totalPrice,
         'boots' => $data
@@ -608,6 +678,88 @@ $app->get('/boot-reservation-new/{id_boot}', function (Request $request, Respons
 //             ->withStatus(404);
 //     }
 // });
+
+$app->get('/apply-reservation-approve-cash/{id_reservation}', function (Request $request, Response $response, $args) {
+    $conn = $GLOBALS['conn'];
+
+    // Get id_reservation from the URL parameters
+    $id_reservation = $args['id_reservation'] ?? null;
+
+    if ($id_reservation === null) {
+        $errorResponse = ["message" => "id_reservation is required"];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(400); // Return a 400 Bad Request status
+    }
+
+    // Fetch the current data based on id_reservation
+    $sql = 'SELECT reservation.*, boot.*, account.* FROM reservation 
+            JOIN boot ON reservation.id_reservation = boot.id_reservation
+            JOIN account ON reservation.id = account.id
+            WHERE reservation.id_reservation = ?'; // Filter by id_reservation
+
+    // Prepare the SQL statement
+    $stmt = $conn->prepare($sql);
+
+    // Bind the id_reservation parameter to the SQL statement
+    $stmt->bind_param('s', $id_reservation);
+
+    // Execute the SQL statement
+    $stmt->execute();
+
+    // Get the result set from the executed statement
+    $result = $stmt->get_result();
+
+    // Initialize an array to hold the fetched data
+    $data = array();
+
+    // Fetch each row as an associative array and add it to the data array
+    while ($row = $result->fetch_assoc()) {
+        array_push($data, $row);
+    }
+
+    // Check if any data was found
+    if (empty($data)) {
+        $errorResponse = ["message" => "No reservation found with the provided id_reservation"];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(404); // Return a 404 Not Found status
+    }
+
+    // Update the status and date_payment in the reservation table
+    $updateReservationSql = 'UPDATE reservation SET status = ?, date_payment = NOW() WHERE id_reservation = ?';
+    $updateReservationStmt = $conn->prepare($updateReservationSql);
+    $newReservationStatus = 'ชําระเงินสดเเล้ว'; // new status for reservation
+    $updateReservationStmt->bind_param('ss', $newReservationStatus, $id_reservation);
+    $updateReservationStmt->execute();
+
+    // Update the status_boot in the boot table
+    $updateBootSql = 'UPDATE boot SET status_boot = ? WHERE id_reservation = ?';
+    $updateBootStmt = $conn->prepare($updateBootSql);
+    $newBootStatus = 'จองเเล้ว'; // new status for boot
+    $updateBootStmt->bind_param('ss', $newBootStatus, $id_reservation);
+    $updateBootStmt->execute();
+
+    // Fetch the updated data to return in the response
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $updatedData = array();
+    while ($row = $result->fetch_assoc()) {
+        array_push($updatedData, $row);
+    }
+
+    // Encode the updated data array to JSON and write it to the response body
+    $response->getBody()->write(json_encode($updatedData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+
+    // Set the Content-Type header and return the response with a 200 OK status
+    return $response
+        ->withHeader('Content-Type', 'application/json; charset=utf-8')
+        ->withStatus(200);
+});
+
+
 $app->get('/apply-reservation-approve/{id_reservation}', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
 
@@ -660,7 +812,7 @@ $app->get('/apply-reservation-approve/{id_reservation}', function (Request $requ
     // Update the status in the reservation table
     $updateReservationSql = 'UPDATE reservation SET status = ? WHERE id_reservation = ?';
     $updateReservationStmt = $conn->prepare($updateReservationSql);
-    $newReservationStatus = 'ชําระเงินเเล้ว'; // new status for reservation
+    $newReservationStatus = 'จองสําเร็จ'; // new status for reservation
     $updateReservationStmt->bind_param('ss', $newReservationStatus, $id_reservation);
     $updateReservationStmt->execute();
 
@@ -689,11 +841,96 @@ $app->get('/apply-reservation-approve/{id_reservation}', function (Request $requ
 });
 
 
+$app->get('/apply-reservation-payagain/{id_reservation}', function (Request $request, Response $response, $args) {
+    $conn = $GLOBALS['conn'];
+
+    // Get id_reservation from the URL parameters
+    $id_reservation = $args['id_reservation'] ?? null;
+
+    if ($id_reservation === null) {
+        $errorResponse = ["message" => "id_reservation is required"];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(400); // Return a 400 Bad Request status
+    }
+
+    // Fetch the current data based on id_reservation
+    $sql = 'SELECT reservation.*, boot.*, account.* FROM reservation 
+            JOIN boot ON reservation.id_reservation = boot.id_reservation
+            JOIN account ON reservation.id = account.id
+            WHERE reservation.id_reservation = ?'; // Filter by id_reservation
+
+    // Prepare the SQL statement
+    $stmt = $conn->prepare($sql);
+
+    // Bind the id_reservation parameter to the SQL statement
+    $stmt->bind_param('s', $id_reservation);
+
+    // Execute the SQL statement
+    $stmt->execute();
+
+    // Get the result set from the executed statement
+    $result = $stmt->get_result();
+
+    // Initialize an array to hold the fetched data
+    $data = array();
+
+    // Fetch each row as an associative array and add it to the data array
+    while ($row = $result->fetch_assoc()) {
+        array_push($data, $row);
+    }
+
+    // Check if any data was found
+    if (empty($data)) {
+        $errorResponse = ["message" => "No reservation found with the provided id_reservation"];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(404); // Return a 404 Not Found status
+    }
+
+    // Update the status in the reservation table
+    $updateReservationSql = 'UPDATE reservation SET status = ? WHERE id_reservation = ?';
+    $updateReservationStmt = $conn->prepare($updateReservationSql);
+    $newReservationStatus = 'กรุณาชําระเงินอีกครั้ง'; // new status for reservation
+    $updateReservationStmt->bind_param('ss', $newReservationStatus, $id_reservation);
+    $updateReservationStmt->execute();
+
+    // Update the status_boot in the boot table
+    $updateBootSql = 'UPDATE boot SET status_boot = ? WHERE id_reservation = ?';
+    $updateBootStmt = $conn->prepare($updateBootSql);
+    $newBootStatus = 'อยู่ระหว่างตรวจสอบ'; // new status for boot
+    $updateBootStmt->bind_param('ss', $newBootStatus, $id_reservation);
+    $updateBootStmt->execute();
+
+    // Fetch the updated data to return in the response
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $updatedData = array();
+    while ($row = $result->fetch_assoc()) {
+        array_push($updatedData, $row);
+    }
+
+    // Encode the updated data array to JSON and write it to the response body
+    $response->getBody()->write(json_encode($updatedData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+
+    // Set the Content-Type header and return the response with a 200 OK status
+    return $response
+        ->withHeader('Content-Type', 'application/json; charset=utf-8')
+        ->withStatus(200);
+});
+
+
 // -----------------------เรียกข้อมูลการจองจากไออดีการจอง -------------------
 $app->get('/reservation-approve/{id_reservation}', function (Request $request, Response $response, $args) {
     $conn = $GLOBALS['conn'];
-    $id_reservation = $args['id_reservation']; // ดึงค่า id_reservation จาก URL
-    $sql = 'SELECT reservation.*, boot.*, account.*, zone.* FROM reservation 
+    $id_reservation = $args['id_reservation']; // Get the id_reservation from the URL
+    // Update the SQL query to include additional sell fields
+    $sql = 'SELECT reservation.*, boot.*, account.*, zone.*, 
+                   boot.img_boot, boot.boot_size, 
+                   reservation.sell_two, reservation.sell_three, reservation.sell_four 
+            FROM reservation 
             JOIN boot ON reservation.id_reservation = boot.id_reservation
             JOIN account ON reservation.id = account.id
             JOIN zone ON boot.id_zone = zone.id_zone
@@ -701,7 +938,7 @@ $app->get('/reservation-approve/{id_reservation}', function (Request $request, R
 
     $stmt = $conn->prepare($sql);
 
-    // ตรวจสอบว่าคำสั่ง SQL ถูกเตรียมสำเร็จหรือไม่
+    // Check if the SQL statement was prepared successfully
     if (!$stmt) {
         $errorResponse = ["message" => "Failed to prepare SQL statement", "error" => $conn->error];
         $response->getBody()->write(json_encode($errorResponse));
@@ -720,7 +957,7 @@ $app->get('/reservation-approve/{id_reservation}', function (Request $request, R
         $reservationId = $row['id_reservation'];
         $accountId = $row['id'];
 
-        // ถ้าไม่มีข้อมูล reservation นี้ใน array ให้เพิ่ม
+        // If this reservation is not yet in the array, add it
         if (!isset($data[$reservationId])) {
             $data[$reservationId] = array(
                 'reservation' => array(
@@ -728,6 +965,9 @@ $app->get('/reservation-approve/{id_reservation}', function (Request $request, R
                     'date_reserva' => $row['date_reserva'],
                     'date_payment' => $row['date_payment'],
                     'sell' => $row['sell'],
+                    'sell_two' => $row['sell_two'], // Include sell_two
+                    'sell_three' => $row['sell_three'], // Include sell_three
+                    'sell_four' => $row['sell_four'], // Include sell_four
                     'img_slip' => $row['img_slip'],
                     'status' => $row['status']
                 ),
@@ -735,7 +975,7 @@ $app->get('/reservation-approve/{id_reservation}', function (Request $request, R
             );
         }
 
-        // ถ้าไม่มีข้อมูล account นี้ใน reservation นี้ให้เพิ่ม
+        // If this account is not yet in the reservation, add it
         if (!isset($data[$reservationId]['account'][$accountId])) {
             $data[$reservationId]['account'][$accountId] = array(
                 'id' => $row['id'],
@@ -746,11 +986,13 @@ $app->get('/reservation-approve/{id_reservation}', function (Request $request, R
             );
         }
 
-        // เพิ่มข้อมูล boot ที่เกี่ยวข้องพร้อมข้อมูล zone
+        // Add the related boot information along with zone data
         $data[$reservationId]['account'][$accountId]['boot'][] = array(
             'id_zone' => $row['id_zone'],
             'number_boot' => $row['number_boot'],
             'price' => $row['price'],
+            'img_boot' => $row['img_boot'],
+            'boot_size' => $row['boot_size'],
             'zone' => array(
                 'id_zone' => $row['id_zone'],
                 'name_zone' => $row['name_zone'],
@@ -758,7 +1000,104 @@ $app->get('/reservation-approve/{id_reservation}', function (Request $request, R
         );
     }
 
-    // เปลี่ยนค่า key ให้เป็น array ของ object
+    // Change keys to be an array of objects
+    $responseData = [];
+    foreach ($data as $reservation) {
+        $reservation['account'] = array_values($reservation['account']);
+        $responseData[] = $reservation;
+    }
+
+    $response->getBody()->write(json_encode($responseData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+    return $response
+        ->withHeader('Content-Type', 'application/json; charset=utf-8')
+        ->withStatus(200);
+});
+
+
+$app->get('/check-reservation-approve/{id_reservation}', function (Request $request, Response $response, $args) {
+    $conn = $GLOBALS['conn'];
+    $id_reservation = $args['id_reservation']; // Get the id_reservation from the URL
+
+    // Update the SQL query to include additional sell fields
+    $sql = 'SELECT reservation.*, boot.*, account.*, zone.*, 
+                   boot.img_boot, boot.boot_size, 
+                   reservation.sell_two, reservation.sell_three, reservation.sell_four 
+            FROM reservation 
+            JOIN boot ON reservation.id_reservation = boot.id_reservation
+            JOIN account ON reservation.id = account.id
+            JOIN zone ON boot.id_zone = zone.id_zone
+            WHERE reservation.id_reservation = ? 
+            AND (reservation.status = ? OR reservation.status = ?)'; // รองรับสองสถานะ
+
+    $stmt = $conn->prepare($sql);
+
+    // Check if the SQL statement was prepared successfully
+    if (!$stmt) {
+        $errorResponse = ["message" => "Failed to prepare SQL statement", "error" => $conn->error];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(500);
+    }
+
+    // เพิ่มตัวแปรสำหรับสถานะทั้งสอง
+    $statusPaid = 'จองสําเร็จ';
+    $statusCash = 'ชําระเงินสดเเล้ว';
+    
+    // Bind parameters and execute the statement
+    $stmt->bind_param('sss', $id_reservation, $statusPaid, $statusCash);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $data = array();
+
+    while ($row = $result->fetch_assoc()) {
+        $reservationId = $row['id_reservation'];
+        $accountId = $row['id'];
+
+        // If this reservation is not yet in the array, add it
+        if (!isset($data[$reservationId])) {
+            $data[$reservationId] = array(
+                'reservation' => array(
+                    'id_reservation' => $row['id_reservation'],
+                    'date_reserva' => $row['date_reserva'],
+                    'date_payment' => $row['date_payment'],
+                    'sell' => $row['sell'],
+                    'sell_two' => $row['sell_two'], // Include sell_two
+                    'sell_three' => $row['sell_three'], // Include sell_three
+                    'sell_four' => $row['sell_four'], // Include sell_four
+                    'img_slip' => $row['img_slip'],
+                    'status' => $row['status'] // ดึงสถานะมาแสดง
+                ),
+                'account' => array()
+            );
+        }
+
+        // If this account is not yet in the reservation, add it
+        if (!isset($data[$reservationId]['account'][$accountId])) {
+            $data[$reservationId]['account'][$accountId] = array(
+                'id' => $row['id'],
+                'firstname' => $row['firstname'],
+                'lastname' => $row['lastname'],
+                'email' => $row['email'],
+                'boot' => array() // Initialize boots array
+            );
+        }
+
+        // Add the related boot information along with zone data
+        $data[$reservationId]['account'][$accountId]['boot'][] = array(
+            'id_zone' => $row['id_zone'],
+            'number_boot' => $row['number_boot'],
+            'price' => $row['price'],
+            'img_boot' => $row['img_boot'],
+            'boot_size' => $row['boot_size'],
+            'zone' => array(
+                'id_zone' => $row['id_zone'],
+                'name_zone' => $row['name_zone'],
+            )
+        );
+    }
+
+    // Change keys to be an array of objects
     $responseData = [];
     foreach ($data as $reservation) {
         $reservation['account'] = array_values($reservation['account']);
@@ -776,11 +1115,37 @@ $app->get('/reservation-approve/{id_reservation}', function (Request $request, R
 
 $app->get('/reservation-wait', function (Request $request, Response $response) {
     $conn = $GLOBALS['conn'];
-    $sql = 'SELECT reservation.*, boot.*, account.*, zone.* FROM reservation 
-            JOIN boot ON reservation.id_reservation = boot.id_reservation
-            JOIN account ON reservation.id = account.id
-            JOIN zone ON boot.id_zone = zone.id_zone
-            WHERE reservation.status = ?';
+
+    // ตั้งค่า locale ให้เป็นภาษาไทย
+    $conn->query("SET lc_time_names = 'th_TH'");
+
+    // Update the SQL query to format dates and retrieve additional fields
+    $sql = 'SELECT 
+                reservation.id_reservation,
+                DATE_FORMAT(DATE_ADD(reservation.date_reserva, INTERVAL 543 YEAR), "%e %M %Y") AS date_reserva,
+                DATE_FORMAT(DATE_ADD(reservation.date_payment, INTERVAL 543 YEAR), "%e %M %Y") AS date_payment,
+                reservation.sell,
+                reservation.img_slip,
+                reservation.status,
+                boot.id_boot,
+                boot.number_boot,
+                boot.price,
+                account.id,
+                account.firstname,
+                account.lastname,
+                account.email,
+                zone.id_zone,
+                zone.name_zone
+            FROM 
+                reservation 
+            JOIN 
+                boot ON reservation.id_reservation = boot.id_reservation
+            JOIN 
+                account ON reservation.id = account.id
+            JOIN 
+                zone ON boot.id_zone = zone.id_zone
+            WHERE 
+                reservation.status = ?';
 
     $stmt = $conn->prepare($sql);
 
@@ -853,7 +1218,9 @@ $app->get('/reservation-wait', function (Request $request, Response $response) {
         ->withHeader('Content-Type', 'application/json; charset=utf-8')
         ->withStatus(200);
 });
-// $app->get('/reservation-wait', function (Request $request, Response $response) {
+
+
+// $app->get('/list-reservation-approve', function (Request $request, Response $response) {
 //     $conn = $GLOBALS['conn'];
 //     $sql = 'SELECT reservation.*, boot.*, account.* FROM reservation 
 //             JOIN boot ON reservation.id_reservation = boot.id_reservation
@@ -861,7 +1228,7 @@ $app->get('/reservation-wait', function (Request $request, Response $response) {
 //             WHERE reservation.status = ?'; // Add WHERE clause to filter by status
 
 //     $stmt = $conn->prepare($sql);
-//     $status = 'อยู่ในระหว่างการตรวจสอบ'; // Define the status to filter by
+//     $status = 'ชําระเงินเเล้ว'; // Define the status to filter by
 //     $stmt->bind_param('s', $status); // Bind the status parameter
 //     $stmt->execute();
 //     $result = $stmt->get_result();
@@ -875,51 +1242,571 @@ $app->get('/reservation-wait', function (Request $request, Response $response) {
 //         ->withHeader('Content-Type', 'application/json; charset=utf-8')
 //         ->withStatus(200);
 // });
-
 $app->get('/list-reservation-approve', function (Request $request, Response $response) {
     $conn = $GLOBALS['conn'];
-    $sql = 'SELECT reservation.*, boot.*, account.* FROM reservation 
-            JOIN boot ON reservation.id_reservation = boot.id_reservation
-            JOIN account ON reservation.id = account.id
-            WHERE reservation.status = ?'; // Add WHERE clause to filter by status
+    $conn->query("SET lc_time_names = 'th_TH'");
+    $status1 = 'ชําระเงินสดเเล้ว';
+    $status2 = 'จองสําเร็จ';
+    $sql = 'SELECT 
+                reservation.id_reservation,
+                DATE_FORMAT(DATE_ADD(reservation.date_reserva, INTERVAL 543 YEAR), "%e %M %Y") AS date_reserva,
+                DATE_FORMAT(DATE_ADD(reservation.date_payment, INTERVAL 543 YEAR), "%e %M %Y") AS date_payment,
+                reservation.sell,
+                reservation.sell_two,
+                reservation.sell_three,
+                reservation.sell_four,
+                reservation.img_slip,
+                reservation.status,
+                boot.id_boot,
+                boot.number_boot,
+                boot.price,
+                account.id,
+                account.firstname,
+                account.lastname,
+                account.email,
+                zone.id_zone,
+                zone.name_zone
+            FROM 
+                reservation 
+            JOIN 
+                boot ON reservation.id_reservation = boot.id_reservation
+            JOIN 
+                account ON reservation.id = account.id
+            JOIN 
+                zone ON boot.id_zone = zone.id_zone
+            WHERE 
+                reservation.status IN (?, ?)';
 
     $stmt = $conn->prepare($sql);
-    $status = 'ชําระเงินเเล้ว'; // Define the status to filter by
-    $stmt->bind_param('s', $status); // Bind the status parameter
+    if (!$stmt) {
+        $errorResponse = ["message" => "Failed to prepare SQL statement", "error" => $conn->error];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(500);
+    }
+
+    $stmt->bind_param('ss', $status1, $status2); // Binding both statuses
     $stmt->execute();
     $result = $stmt->get_result();
     $data = array();
-    while ($row = $result->fetch_assoc()) { // Use fetch_assoc() to fetch rows
-        array_push($data, $row);
+
+    while ($row = $result->fetch_assoc()) {
+        $reservationId = $row['id_reservation'];
+        $accountId = $row['id'];
+
+        // ถ้าไม่มีข้อมูล reservation นี้ใน array ให้เพิ่ม
+        if (!isset($data[$reservationId])) {
+            $data[$reservationId] = array(
+                'reservation' => array(
+                    'id_reservation' => $row['id_reservation'],
+                    'date_reserva' => $row['date_reserva'], // วันที่เป็นภาษาไทย
+                    'date_payment' => $row['date_payment'], // วันที่เป็นภาษาไทย
+                    'sell' => $row['sell'],
+                    'sell_two' => $row['sell_two'], // Include sell_two
+                    'sell_three' => $row['sell_three'], // Include sell_three
+                    'sell_four' => $row['sell_four'], // Include sell_four
+                    'img_slip' => $row['img_slip'],
+                    'status' => $row['status']
+                ),
+                'account' => array()
+            );
+        }
+
+        // ถ้าไม่มีข้อมูล account นี้ใน reservation นี้ให้เพิ่ม
+        if (!isset($data[$reservationId]['account'][$accountId])) {
+            $data[$reservationId]['account'][$accountId] = array(
+                'id' => $row['id'],
+                'firstname' => $row['firstname'],
+                'lastname' => $row['lastname'],
+                'email' => $row['email'],
+                'boot' => array() // Initialize boots array
+            );
+        }
+
+        // เพิ่มข้อมูล boot ที่เกี่ยวข้องพร้อมข้อมูล zone
+        $data[$reservationId]['account'][$accountId]['boot'][] = array(
+            'id_zone' => $row['id_zone'],
+            'number_boot' => $row['number_boot'],
+            'price' => $row['price'],
+            'zone' => array(
+                'id_zone' => $row['id_zone'],
+                'name_zone' => $row['name_zone'],
+            )
+        );
     }
 
-    $response->getBody()->write(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+    // เปลี่ยนค่า key ให้เป็น array ของ object
+    $responseData = [];
+    foreach ($data as $reservation) {
+        $reservation['account'] = array_values($reservation['account']);
+        $responseData[] = $reservation;
+    }
+
+    $response->getBody()->write(json_encode($responseData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
     return $response
         ->withHeader('Content-Type', 'application/json; charset=utf-8')
         ->withStatus(200);
 });
+
+// $app->get('/list-reservation-approve', function (Request $request, Response $response) {
+//     $conn = $GLOBALS['conn'];
+//     $conn->query("SET lc_time_names = 'th_TH'");
+//     // Update the SQL query to include additional sell fields and date formatting
+//     $sql = 'SELECT 
+//                 reservation.*, 
+//                 boot.*, 
+//                 account.*, 
+//                 zone.*, 
+//                 DATE_FORMAT(DATE_ADD(reservation.date_reserva, INTERVAL 543 YEAR), "%Y-%m-%d") AS date_reserva, 
+//                 DATE_FORMAT(DATE_ADD(reservation.date_payment, INTERVAL 543 YEAR), "%Y-%m-%d") AS date_payment,
+//                 reservation.sell_two, 
+//                 reservation.sell_three, 
+//                 reservation.sell_four 
+//             FROM reservation 
+//             JOIN boot ON reservation.id_reservation = boot.id_reservation
+//             JOIN account ON reservation.id = account.id
+//             JOIN zone ON boot.id_zone = zone.id_zone
+//             WHERE reservation.status IN (?, ?)';
+
+//     $stmt = $conn->prepare($sql);
+
+//     // Check if the SQL statement was prepared successfully
+//     if (!$stmt) {
+//         $errorResponse = ["message" => "Failed to prepare SQL statement", "error" => $conn->error];
+//         $response->getBody()->write(json_encode($errorResponse));
+//         return $response
+//             ->withHeader('Content-Type', 'application/json')
+//             ->withStatus(500);
+//     }
+
+//     // Define the statuses for the reservation
+//     $status1 = 'ชําระเงินสดเเล้ว';
+//     $status2 = 'ชําระเงินเเล้ว';
+//     $stmt->bind_param('ss', $status1, $status2); // Binding both statuses
+//     $stmt->execute();
+//     $result = $stmt->get_result();
+//     $data = array();
+
+//     while ($row = $result->fetch_assoc()) {
+//         $reservationId = $row['id_reservation'];
+//         $accountId = $row['id'];
+
+//         // If this reservation is not yet in the array, add it
+//         if (!isset($data[$reservationId])) {
+//             $data[$reservationId] = array(
+//                 'reservation' => array(
+//                     'id_reservation' => $row['id_reservation'],
+//                     'date_reserva' => $row['date_reserva'], // Updated to formatted date
+//                     'date_payment' => $row['date_payment'], // Updated to formatted date
+//                     'sell' => $row['sell'],
+//                     'sell_two' => $row['sell_two'], // Include sell_two
+//                     'sell_three' => $row['sell_three'], // Include sell_three
+//                     'sell_four' => $row['sell_four'], // Include sell_four
+//                     'img_slip' => $row['img_slip'],
+//                     'status' => $row['status']
+//                 ),
+//                 'account' => array()
+//             );
+//         }
+
+//         // If this account is not yet in the reservation, add it
+//         if (!isset($data[$reservationId]['account'][$accountId])) {
+//             $data[$reservationId]['account'][$accountId] = array(
+//                 'id' => $row['id'],
+//                 'firstname' => $row['firstname'],
+//                 'lastname' => $row['lastname'],
+//                 'email' => $row['email'],
+//                 'boot' => array() // Initialize boots array
+//             );
+//         }
+
+//         // Add the related boot information along with zone data
+//         $data[$reservationId]['account'][$accountId]['boot'][] = array(
+//             'id_zone' => $row['id_zone'],
+//             'number_boot' => $row['number_boot'],
+//             'price' => $row['price'],
+//             'zone' => array(
+//                 'id_zone' => $row['id_zone'],
+//                 'name_zone' => $row['name_zone'],
+//             )
+//         );
+//     }
+
+//     // Change keys to be an array of objects
+//     $responseData = [];
+//     foreach ($data as $reservation) {
+//         $reservation['account'] = array_values($reservation['account']);
+//         $responseData[] = $reservation;
+//     }
+
+//     $response->getBody()->write(json_encode($responseData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+//     return $response
+//         ->withHeader('Content-Type', 'application/json; charset=utf-8')
+//         ->withStatus(200);
+// });
+
+
+
+
+$app->get('/reservation-approve-cash', function (Request $request, Response $response) {
+    $conn = $GLOBALS['conn'];
+
+    // ตั้งค่า locale ให้เป็นภาษาไทย
+    $conn->query("SET lc_time_names = 'th_TH'");
+
+    // Update the SQL query to format dates and include additional sell fields
+    $sql = 'SELECT 
+                reservation.id_reservation,
+                DATE_FORMAT(DATE_ADD(reservation.date_reserva, INTERVAL 543 YEAR), "%e %M %Y") AS date_reserva,
+                DATE_FORMAT(DATE_ADD(reservation.date_payment, INTERVAL 543 YEAR), "%e %M %Y") AS date_payment,
+                reservation.sell,
+                reservation.sell_two,
+                reservation.sell_three,
+                reservation.sell_four,
+                reservation.img_slip,
+                reservation.status,
+                boot.id_boot,
+                boot.number_boot,
+                boot.price,
+                account.id,
+                account.firstname,
+                account.lastname,
+                account.email,
+                zone.id_zone,
+                zone.name_zone
+            FROM 
+                reservation 
+            JOIN 
+                boot ON reservation.id_reservation = boot.id_reservation
+            JOIN 
+                account ON reservation.id = account.id
+            JOIN 
+                zone ON boot.id_zone = zone.id_zone
+            WHERE 
+                reservation.status = ?';
+
+    $stmt = $conn->prepare($sql);
+
+    // ตรวจสอบว่าคำสั่ง SQL ถูกเตรียมสำเร็จหรือไม่
+    if (!$stmt) {
+        $errorResponse = ["message" => "Failed to prepare SQL statement", "error" => $conn->error];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(500);
+    }
+
+    $status = 'อยู่ในระหว่างการตรวจสอบชําระเงินสด';
+    $stmt->bind_param('s', $status);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $data = array();
+
+    while ($row = $result->fetch_assoc()) {
+        $reservationId = $row['id_reservation'];
+        $accountId = $row['id'];
+        
+        // ถ้าไม่มีข้อมูล reservation นี้ใน array ให้เพิ่ม
+        if (!isset($data[$reservationId])) {
+            $data[$reservationId] = array(
+                'reservation' => array(
+                    'id_reservation' => $row['id_reservation'],
+                    'date_reserva' => $row['date_reserva'], // วันที่เป็นภาษาไทย
+                    'date_payment' => $row['date_payment'], // วันที่เป็นภาษาไทย
+                    'sell' => $row['sell'],
+                    'sell_two' => $row['sell_two'], // Include sell_two
+                    'sell_three' => $row['sell_three'], // Include sell_three
+                    'sell_four' => $row['sell_four'], // Include sell_four
+                    'img_slip' => $row['img_slip'],
+                    'status' => $row['status']
+                ),
+                'account' => array()
+            );
+        }
+
+        // ถ้าไม่มีข้อมูล account นี้ใน reservation นี้ให้เพิ่ม
+        if (!isset($data[$reservationId]['account'][$accountId])) {
+            $data[$reservationId]['account'][$accountId] = array(
+                'id' => $row['id'],
+                'firstname' => $row['firstname'],
+                'lastname' => $row['lastname'],
+                'email' => $row['email'],
+                'boot' => array() // Initialize boots array
+            );
+        }
+
+        // เพิ่มข้อมูล boot ที่เกี่ยวข้องพร้อมข้อมูล zone
+        $data[$reservationId]['account'][$accountId]['boot'][] = array(
+            'id_zone' => $row['id_zone'],
+            'number_boot' => $row['number_boot'],
+            'price' => $row['price'],
+            'zone' => array(
+                'id_zone' => $row['id_zone'],
+                'name_zone' => $row['name_zone'],
+            )
+        );
+    }
+
+    // เปลี่ยนค่า key ให้เป็น array ของ object
+    $responseData = [];
+    foreach ($data as $reservation) {
+        $reservation['account'] = array_values($reservation['account']);
+        $responseData[] = $reservation;
+    }
+
+    $response->getBody()->write(json_encode($responseData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+    return $response
+        ->withHeader('Content-Type', 'application/json; charset=utf-8')
+        ->withStatus(200);
+});
+
+
+// $app->get('/list-reservation-NotPay', function (Request $request, Response $response) {
+//     $conn = $GLOBALS['conn'];
+//     $sql = 'SELECT reservation.*, boot.*, account.* FROM reservation 
+//             JOIN boot ON reservation.id_reservation = boot.id_reservation
+//             JOIN account ON reservation.id = account.id
+//             WHERE reservation.status = ?'; // Add WHERE clause to filter by status
+
+//     $stmt = $conn->prepare($sql);
+//     $status = 'ยังไม่ชำระเงิน'; // Define the status to filter by
+//     $stmt->bind_param('s', $status); // Bind the status parameter
+//     $stmt->execute();
+//     $result = $stmt->get_result();
+//     $data = array();
+//     while ($row = $result->fetch_assoc()) { // Use fetch_assoc() to fetch rows
+//         array_push($data, $row);
+//     }
+
+//     $response->getBody()->write(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+//     return $response
+//         ->withHeader('Content-Type', 'application/json; charset=utf-8')
+//         ->withStatus(200);
+// });
 $app->get('/list-reservation-NotPay', function (Request $request, Response $response) {
     $conn = $GLOBALS['conn'];
-    $sql = 'SELECT reservation.*, boot.*, account.* FROM reservation 
-            JOIN boot ON reservation.id_reservation = boot.id_reservation
-            JOIN account ON reservation.id = account.id
-            WHERE reservation.status = ?'; // Add WHERE clause to filter by status
+    
+    // ตั้งค่า locale ให้เป็นภาษาไทย
+    $conn->query("SET lc_time_names = 'th_TH'");
+    
+    // Add sell_two, sell_three, and sell_four in the SELECT statement
+    $sql = 'SELECT 
+                reservation.id_reservation,
+                DATE_FORMAT(DATE_ADD(reservation.date_reserva, INTERVAL 543 YEAR), "%e %M %Y") AS date_reserva,
+                DATE_FORMAT(DATE_ADD(reservation.date_payment, INTERVAL 543 YEAR), "%e %M %Y") AS date_payment,
+                reservation.sell,
+                reservation.sell_two, -- Added
+                reservation.sell_three, -- Added
+                reservation.sell_four, -- Added
+                reservation.img_slip,
+                reservation.status,
+                boot.id_boot,
+                boot.number_boot,
+                boot.price,
+                account.id,
+                account.firstname,
+                account.lastname,
+                account.email,
+                zone.id_zone,
+                zone.name_zone
+            FROM 
+                reservation 
+            JOIN 
+                boot ON reservation.id_reservation = boot.id_reservation
+            JOIN 
+                account ON reservation.id = account.id
+            JOIN 
+                zone ON boot.id_zone = zone.id_zone
+            WHERE 
+                reservation.status = ?';
 
     $stmt = $conn->prepare($sql);
-    $status = 'ยังไม่ชำระเงิน'; // Define the status to filter by
-    $stmt->bind_param('s', $status); // Bind the status parameter
+
+    // ตรวจสอบว่าคำสั่ง SQL ถูกเตรียมสำเร็จหรือไม่
+    if (!$stmt) {
+        $errorResponse = ["message" => "Failed to prepare SQL statement", "error" => $conn->error];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(500);
+    }
+
+    $status = 'ยังไม่ชำระเงิน';
+    $stmt->bind_param('s', $status);
     $stmt->execute();
     $result = $stmt->get_result();
     $data = array();
-    while ($row = $result->fetch_assoc()) { // Use fetch_assoc() to fetch rows
-        array_push($data, $row);
+
+    while ($row = $result->fetch_assoc()) {
+        $reservationId = $row['id_reservation'];
+        $accountId = $row['id'];
+        
+        // ถ้าไม่มีข้อมูล reservation นี้ใน array ให้เพิ่ม
+        if (!isset($data[$reservationId])) {
+            $data[$reservationId] = array(
+                'reservation' => array(
+                    'id_reservation' => $row['id_reservation'],
+                    'date_reserva' => $row['date_reserva'],
+                    'date_payment' => $row['date_payment'],
+                    'sell' => $row['sell'],
+                    'sell_two' => $row['sell_two'], // Include sell_two
+                    'sell_three' => $row['sell_three'], // Include sell_three
+                    'sell_four' => $row['sell_four'], // Include sell_four
+                    'img_slip' => $row['img_slip'],
+                    'status' => $row['status']
+                ),
+                'account' => array()
+            );
+        }
+
+        // ถ้าไม่มีข้อมูล account นี้ใน reservation นี้ให้เพิ่ม
+        if (!isset($data[$reservationId]['account'][$accountId])) {
+            $data[$reservationId]['account'][$accountId] = array(
+                'id' => $row['id'],
+                'firstname' => $row['firstname'],
+                'lastname' => $row['lastname'],
+                'email' => $row['email'],
+                'boot' => array() // Initialize boots array
+            );
+        }
+
+        // เพิ่มข้อมูล boot ที่เกี่ยวข้องพร้อมข้อมูล zone
+        $data[$reservationId]['account'][$accountId]['boot'][] = array(
+            'id_zone' => $row['id_zone'],
+            'number_boot' => $row['number_boot'],
+            'price' => $row['price'],
+            'zone' => array(
+                'id_zone' => $row['id_zone'],
+                'name_zone' => $row['name_zone'],
+            )
+        );
     }
 
-    $response->getBody()->write(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+    // เปลี่ยนค่า key ให้เป็น array ของ object
+    $responseData = [];
+    foreach ($data as $reservation) {
+        $reservation['account'] = array_values($reservation['account']);
+        $responseData[] = $reservation;
+    }
+
+    $response->getBody()->write(json_encode($responseData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
     return $response
         ->withHeader('Content-Type', 'application/json; charset=utf-8')
         ->withStatus(200);
 });
+$app->get('/list-reservation-payagain', function (Request $request, Response $response) {
+    $conn = $GLOBALS['conn'];
+    
+    // ตั้งค่า locale ให้เป็นภาษาไทย
+    $conn->query("SET lc_time_names = 'th_TH'");
+    
+    // Add sell_two, sell_three, and sell_four in the SELECT statement
+    $sql = 'SELECT 
+                reservation.id_reservation,
+                DATE_FORMAT(DATE_ADD(reservation.date_reserva, INTERVAL 543 YEAR), "%e %M %Y") AS date_reserva,
+                DATE_FORMAT(DATE_ADD(reservation.date_payment, INTERVAL 543 YEAR), "%e %M %Y") AS date_payment,
+                reservation.sell,
+                reservation.sell_two, -- Added
+                reservation.sell_three, -- Added
+                reservation.sell_four, -- Added
+                reservation.img_slip,
+                reservation.status,
+                boot.id_boot,
+                boot.number_boot,
+                boot.price,
+                account.id,
+                account.firstname,
+                account.lastname,
+                account.email,
+                zone.id_zone,
+                zone.name_zone
+            FROM 
+                reservation 
+            JOIN 
+                boot ON reservation.id_reservation = boot.id_reservation
+            JOIN 
+                account ON reservation.id = account.id
+            JOIN 
+                zone ON boot.id_zone = zone.id_zone
+            WHERE 
+                reservation.status = ?';
+
+    $stmt = $conn->prepare($sql);
+
+    // ตรวจสอบว่าคำสั่ง SQL ถูกเตรียมสำเร็จหรือไม่
+    if (!$stmt) {
+        $errorResponse = ["message" => "Failed to prepare SQL statement", "error" => $conn->error];
+        $response->getBody()->write(json_encode($errorResponse));
+        return $response
+            ->withHeader('Content-Type', 'application/json')
+            ->withStatus(500);
+    }
+
+    $status = 'กรุณาชําระเงินอีกครั้ง';
+    $stmt->bind_param('s', $status);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $data = array();
+
+    while ($row = $result->fetch_assoc()) {
+        $reservationId = $row['id_reservation'];
+        $accountId = $row['id'];
+        
+        // ถ้าไม่มีข้อมูล reservation นี้ใน array ให้เพิ่ม
+        if (!isset($data[$reservationId])) {
+            $data[$reservationId] = array(
+                'reservation' => array(
+                    'id_reservation' => $row['id_reservation'],
+                    'date_reserva' => $row['date_reserva'],
+                    'date_payment' => $row['date_payment'],
+                    'sell' => $row['sell'],
+                    'sell_two' => $row['sell_two'], // Include sell_two
+                    'sell_three' => $row['sell_three'], // Include sell_three
+                    'sell_four' => $row['sell_four'], // Include sell_four
+                    'img_slip' => $row['img_slip'],
+                    'status' => $row['status']
+                ),
+                'account' => array()
+            );
+        }
+
+        // ถ้าไม่มีข้อมูล account นี้ใน reservation นี้ให้เพิ่ม
+        if (!isset($data[$reservationId]['account'][$accountId])) {
+            $data[$reservationId]['account'][$accountId] = array(
+                'id' => $row['id'],
+                'firstname' => $row['firstname'],
+                'lastname' => $row['lastname'],
+                'email' => $row['email'],
+                'boot' => array() // Initialize boots array
+            );
+        }
+
+        // เพิ่มข้อมูล boot ที่เกี่ยวข้องพร้อมข้อมูล zone
+        $data[$reservationId]['account'][$accountId]['boot'][] = array(
+            'id_zone' => $row['id_zone'],
+            'number_boot' => $row['number_boot'],
+            'price' => $row['price'],
+            'zone' => array(
+                'id_zone' => $row['id_zone'],
+                'name_zone' => $row['name_zone'],
+            )
+        );
+    }
+
+    // เปลี่ยนค่า key ให้เป็น array ของ object
+    $responseData = [];
+    foreach ($data as $reservation) {
+        $reservation['account'] = array_values($reservation['account']);
+        $responseData[] = $reservation;
+    }
+
+    $response->getBody()->write(json_encode($responseData, JSON_UNESCAPED_UNICODE | JSON_NUMERIC_CHECK));
+    return $response
+        ->withHeader('Content-Type', 'application/json; charset=utf-8')
+        ->withStatus(200);
+});
+
 $app->get('/reservation', function (Request $request, Response $response) {
     $conn = $GLOBALS['conn'];
     $id = $request->getQueryParams()['id'];
@@ -930,9 +1817,12 @@ $app->get('/reservation', function (Request $request, Response $response) {
     $sql = 'SELECT 
                 reservation.id_reservation, 
                 reservation.id,
-                DATE_FORMAT(reservation.date_reserva, "%d %M %Y") AS date_reserva,
-                DATE_FORMAT(reservation.date_payment, "%d %M %Y") AS date_payment,
+                DATE_FORMAT(DATE_ADD(reservation.date_reserva, INTERVAL 543 YEAR), "%e %M %Y") AS date_reserva,
+                DATE_FORMAT(DATE_ADD(reservation.date_payment, INTERVAL 543 YEAR), "%e %M %Y") AS date_payment,
                 reservation.sell, 
+                reservation.sell_two,  -- เพิ่ม sell_two
+                reservation.sell_three,  -- เพิ่ม sell_three
+                reservation.sell_four,  -- เพิ่ม sell_four
                 reservation.img_slip, 
                 reservation.status, 
                 SUM(boot.price) AS total_price,
@@ -981,6 +1871,8 @@ $app->get('/reservation', function (Request $request, Response $response) {
         ->withHeader('Content-Type', 'application/json; charset=utf-8')
         ->withStatus(200);
 });
+
+
 
 
 $app->get('/reservation-payment', function (Request $request, Response $response) {
